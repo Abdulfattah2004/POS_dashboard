@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   Building2,
   CheckCircle2,
-  FileText,
   Gauge,
   LogOut,
   Mail,

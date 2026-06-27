@@ -14,7 +14,6 @@ import {
   Settings,
   Store,
   TrendingUp,
-  Users,
   Wallet,
 } from "lucide-react";
 
