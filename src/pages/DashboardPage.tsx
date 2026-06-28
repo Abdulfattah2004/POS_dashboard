@@ -138,45 +138,64 @@ export default function DashboardPage() {
     setLoading(false);
   }
 
-  async function loadBranches(businessId: string) {
-    const { data } = await supabase
-      .from("branches")
-      .select("*")
-      .eq("business_id", businessId);
+async function loadBranches(businessId: string) {
+  const { data } = await supabase
+    .from("branches")
+    .select("*")
+    .eq("business_id", businessId);
 
-    setBranches(data || []);
+  const visibleBranches = (data || []).filter(
+    (branch) => branch.name.trim().toLowerCase() !== "main branch"
+  );
+
+  setBranches(visibleBranches);
+}
+
+async function loadData() {
+  const { data: branchData } = await supabase
+    .from("branches")
+    .select("*")
+    .eq("business_id", selectedBusiness);
+
+  const visibleBranches = (branchData || []).filter(
+    (branch) => branch.name.trim().toLowerCase() !== "main branch"
+  );
+
+  const visibleBranchIds = visibleBranches.map((branch) => branch.id);
+
+  let salesQuery = supabase
+    .from("sales")
+    .select("*")
+    .eq("business_id", selectedBusiness)
+    .order("date", { ascending: false });
+
+  let productsQuery = supabase
+    .from("products")
+    .select("*")
+    .eq("business_id", selectedBusiness);
+
+  let saleItemsQuery = supabase
+    .from("sale_items")
+    .select("*")
+    .eq("business_id", selectedBusiness);
+
+  if (selectedBranch !== "all") {
+    salesQuery = salesQuery.eq("branch_id", selectedBranch);
+    productsQuery = productsQuery.eq("branch_id", selectedBranch);
+    saleItemsQuery = saleItemsQuery.eq("branch_id", selectedBranch);
+  } else if (visibleBranchIds.length > 0) {
+    salesQuery = salesQuery.in("branch_id", visibleBranchIds);
+    productsQuery = productsQuery.in("branch_id", visibleBranchIds);
+    saleItemsQuery = saleItemsQuery.in("branch_id", visibleBranchIds);
   }
 
-  async function loadData() {
-    let salesQuery = supabase
-      .from("sales")
-      .select("*")
-      .eq("business_id", selectedBusiness)
-      .order("date", { ascending: false });
+  const [{ data: salesData }, { data: productsData }, { data: itemsData }] =
+    await Promise.all([salesQuery, productsQuery, saleItemsQuery]);
 
-    let productsQuery = supabase
-      .from("products")
-      .select("*")
-      .eq("business_id", selectedBusiness);
-
-    let saleItemsQuery = supabase
-      .from("sale_items")
-      .select("*")
-      .eq("business_id", selectedBusiness);
-
-    if (selectedBranch !== "all") {
-      salesQuery = salesQuery.eq("branch_id", selectedBranch);
-      productsQuery = productsQuery.eq("branch_id", selectedBranch);
-      saleItemsQuery = saleItemsQuery.eq("branch_id", selectedBranch);
-    }
-
-    const [{ data: salesData }, { data: productsData }, { data: itemsData }] =
-      await Promise.all([salesQuery, productsQuery, saleItemsQuery]);
-
-    setSales(salesData || []);
-    setProducts(productsData || []);
-    setSaleItems(itemsData || []);
-  }
+  setSales(salesData || []);
+  setProducts(productsData || []);
+  setSaleItems(itemsData || []);
+}
 
   async function logout() {
     await supabase.auth.signOut();
@@ -737,9 +756,7 @@ function KpiCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <p className="text-sm font-medium text-slate-500">{title}</p>
-            <Badge className="shrink-0 bg-emerald-50 text-xs text-emerald-600 hover:bg-emerald-50">
-              {change}
-            </Badge>
+            
           </div>
 
           <h3 className="mt-2 truncate text-2xl font-bold md:text-3xl">
