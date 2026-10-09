@@ -30,7 +30,7 @@ export function normalizeSnapshot(raw:unknown,businessId:string,branchIds:string
  for(const r of data.refunds){const original=data.sales.find(s=>s.record.id===r.record.saleId);if(!original||original.branch_id!==r.branch_id)throw new Error('Refund parent missing from consistent snapshot');
   for(const item of r.record.items){const sold=original.record.items.find(i=>i.productId===item.productId);if(!sold||sold.salePrice!==item.salePrice||sold.purchasePrice!==item.purchasePrice)throw new Error('Refund item differs from immutable original sale');const key=JSON.stringify([r.record.saleId,item.productId]);const quantity=(returned.get(key)??0)+item.quantity;if(quantity>sold.quantity)throw new Error('Snapshot refund exceeds original sold quantity');returned.set(key,quantity);}
  }
- for(const rows of Object.values(data.historical))for(const row of rows){if((row.business_id!==undefined&&row.business_id!==businessId)||(row.branch_id!==undefined&&row.branch_id!==null&&!allowed.has(String(row.branch_id))))throw new Error('Historical snapshot scope mismatch');}
+ for(const rows of Object.values(data.historical))for(const row of rows){if(row.business_id!==businessId||typeof row.branch_id!=='string'||!allowed.has(row.branch_id))throw new Error('Historical snapshot scope mismatch');}
 
  return {sales:events.sort((a,b)=>b.date.localeCompare(a.date)),saleItems:items,products:data.products.filter(p=>p.is_active),historical:data.historical};
 }
