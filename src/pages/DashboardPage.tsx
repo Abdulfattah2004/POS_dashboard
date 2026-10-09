@@ -1,7 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import {readCatalog} from '../lib/catalog';
+import { businessDate, businessWeekday } from '../lib/businessDate';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
   AlertCircle,
-  Bell,
+  BarChart3,
   Box,
   Building2,
   ChartLine,
@@ -14,8 +17,6 @@ import {
   Settings,
   ShoppingCart,
   Store,
-  UserRound,
-  Users,
   Wallet,
   X,
 } from "lucide-react";
@@ -23,9 +24,6 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
-  Cell,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -44,7 +42,11 @@ import {
 } from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
+import { useInventoryRealtime } from "../hooks/useInventoryRealtime";
+import { fetchFinancialSnapshot } from "../lib/financialData";
+import { SnapshotRequestGuard } from "../lib/financial";
+import { FinancialNotice } from "../components/FinancialNotice";
 
 type Business = {
   id: string;
@@ -59,6 +61,9 @@ type Branch = {
 };
 
 type Sale = {
+  kind: "sale" | "refund";
+  settlement_currency: string;
+  settlement_amount: number;
   id: string;
   business_id: string;
   branch_id: string;
@@ -81,6 +86,7 @@ type Product = {
 };
 
 type SaleItem = {
+  sale_id: string;
   id: string;
   product_name: string;
   quantity: number;
@@ -90,31 +96,35 @@ type SaleItem = {
 
 const navItems = [
   { label: "Dashboard", icon: Gauge, href: "/dashboard" },
+  { label: "Inventory", icon: Package, href: "/inventory" },
+  { label: "Analytics", icon: BarChart3, href: "/analytics" },
   { label: "Reports", icon: CreditCard, href: "/reports" },
   { label: "Settings", icon: Settings, href: "/settings" },
 ];
 
 export default function DashboardPage() {
+  const navigate=useNavigate();
+  const [dashboardQuery,setDashboardQuery]=useState("");
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
-  const [sales, setSales] = useState<Sale[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [saleItems, setSaleItems] = useState<SaleItem[]>([]);
+  const [loadedSales, setSales] = useState<Sale[]>([]);
+  const [loadedProducts, setProducts] = useState<Product[]>([]);
+  const [loadedItems, setSaleItems] = useState<SaleItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataError,setDataError] = useState("");
+  const [loadedHistory,setHistorical] = useState<Record<string,unknown[]>|null>(null);
+  const [loadedScope,setLoadedScope] = useState('');
+  const scopeMatches=loadedScope===selectedBusiness+'/'+selectedBranch;
+  const sales=useMemo(()=>scopeMatches?loadedSales:[],[scopeMatches,loadedSales]);
+  const products=scopeMatches?loadedProducts:[];
+  const saleItems=useMemo(()=>scopeMatches?loadedItems:[],[scopeMatches,loadedItems]);
+  const historical=scopeMatches?loadedHistory:null;
+  const requestGuard=useRef(new SnapshotRequestGuard());
+  useLayoutEffect(() => { requestGuard.current.activate(selectedBusiness+"/"+selectedBranch); },[selectedBusiness,selectedBranch]);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-
-  useEffect(() => {
-    loadBusinesses();
-  }, []);
-
-  useEffect(() => {
-    if (selectedBusiness) {
-      loadBranches(selectedBusiness);
-      loadData();
-    }
-  }, [selectedBusiness, selectedBranch]);
+  const [refreshing, setRefreshing] = useState(false);
 
   async function loadBusinesses() {
     const { data: userData } = await supabase.auth.getUser();
@@ -124,10 +134,8 @@ export default function DashboardPage() {
       return;
     }
 
-    const { data } = await supabase
-      .from("businesses")
-      .select("*")
-      .eq("owner_id", userData.user.id);
+    const {data,error:catalogError}=await readCatalog<Business>('businesses',userData.user.id);
+    if(catalogError){setDataError(catalogError.message);setLoading(false);return;}
 
     setBusinesses(data || []);
 
@@ -139,72 +147,56 @@ export default function DashboardPage() {
   }
 
 async function loadBranches(businessId: string) {
-  const { data } = await supabase
-    .from("branches")
-    .select("*")
-    .eq("business_id", businessId);
+  const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setDataError(catalogError.message);setBranches([]);return;}
 
-  const visibleBranches = (data || []).filter(
-    (branch) => branch.name.trim().toLowerCase() !== "main branch"
-  );
-
-  setBranches(visibleBranches);
+  setBranches(data || []);
 }
 
-async function loadData() {
-  const { data: branchData } = await supabase
-    .from("branches")
-    .select("*")
-    .eq("business_id", selectedBusiness);
+const loadData = useCallback(async () => {
+ const scope=selectedBusiness+'/'+selectedBranch;const ticket=requestGuard.current.begin(scope);
+ try {
+ const data=await fetchFinancialSnapshot(selectedBusiness,selectedBranch);
+ if(!requestGuard.current.isCurrent(ticket))return;
+ setSales(data.sales);setSaleItems(data.saleItems);setProducts(data.products as unknown as Product[]);setHistorical(data.historical);setLoadedScope(scope);setDataError('');
+ } catch(error) {
+ if(requestGuard.current.isCurrent(ticket)){setSales([]);setSaleItems([]);setProducts([]);setHistorical(null);setDataError(error instanceof Error?error.message:'Financial data could not be loaded');}
+ }
+},[selectedBusiness,selectedBranch]);
 
-  const visibleBranches = (branchData || []).filter(
-    (branch) => branch.name.trim().toLowerCase() !== "main branch"
+async function refreshDashboardData() {
+  setRefreshing(true);
+  await loadData();
+  setRefreshing(false);
+}
+
+    useInventoryRealtime(
+    selectedBusiness,
+    branches.map((branch) => branch.id),
+    loadData
   );
 
-  const visibleBranchIds = visibleBranches.map((branch) => branch.id);
+  useEffect(() => {
+    const timer=window.setTimeout(() => { void loadBusinesses(); },0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
-  let salesQuery = supabase
-    .from("sales")
-    .select("*")
-    .eq("business_id", selectedBusiness)
-    .order("date", { ascending: false });
+  useEffect(() => {
+    if (selectedBusiness) {
+      const timer=window.setTimeout(() => { void loadBranches(selectedBusiness); void loadData(); },0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [selectedBusiness, selectedBranch, loadData]);
 
-  let productsQuery = supabase
-    .from("products")
-    .select("*")
-    .eq("business_id", selectedBusiness);
-
-  let saleItemsQuery = supabase
-    .from("sale_items")
-    .select("*")
-    .eq("business_id", selectedBusiness);
-
-  if (selectedBranch !== "all") {
-    salesQuery = salesQuery.eq("branch_id", selectedBranch);
-    productsQuery = productsQuery.eq("branch_id", selectedBranch);
-    saleItemsQuery = saleItemsQuery.eq("branch_id", selectedBranch);
-  } else if (visibleBranchIds.length > 0) {
-    salesQuery = salesQuery.in("branch_id", visibleBranchIds);
-    productsQuery = productsQuery.in("branch_id", visibleBranchIds);
-    saleItemsQuery = saleItemsQuery.in("branch_id", visibleBranchIds);
-  }
-
-  const [{ data: salesData }, { data: productsData }, { data: itemsData }] =
-    await Promise.all([salesQuery, productsQuery, saleItemsQuery]);
-
-  setSales(salesData || []);
-  setProducts(productsData || []);
-  setSaleItems(itemsData || []);
-}
 
   async function logout() {
     await supabase.auth.signOut();
     window.location.href = "/login";
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = businessDate();
 
-  const todaySales = sales.filter((sale) => String(sale.date).startsWith(today));
+  const todaySales = sales.filter((sale) => businessDate(sale.date) === today);
 
   const todayRevenue = todaySales.reduce(
     (sum, sale) => sum + Number(sale.total || 0),
@@ -216,7 +208,7 @@ async function loadData() {
     0
   );
 
-  const transactions = sales.length;
+  const transactions = sales.filter(s=>s.kind==="sale").length;
   const averageOrder = transactions > 0 ? totalRevenue / transactions : 0;
 
   const lowStock = products.filter(
@@ -237,13 +229,15 @@ async function loadData() {
       const total = sales
         .filter((sale) => {
           const saleDate = new Date(sale.date);
-          return days[saleDate.getDay()] === day;
+          return days[businessWeekday(saleDate)] === day;
         })
         .reduce((sum, sale) => sum + Number(sale.total || 0), 0);
 
       return { day, revenue: total };
     });
   }, [sales]);
+
+  const recentSales = sales.filter(sale=>{const query=dashboardQuery.trim().toLowerCase();return !query||[sale.id,sale.cashier_name,sale.currency,...saleItems.filter(item=>item.sale_id===sale.id).map(item=>item.product_name)].join(" ").toLowerCase().includes(query);});
 
   const topProducts = useMemo(() => {
     const map = new Map<
@@ -264,19 +258,14 @@ async function loadData() {
       map.set(item.product_name, current);
     });
 
-    return Array.from(map.values())
+    return Array.from(map.values()).filter(product=>product.name.toLowerCase().includes(dashboardQuery.trim().toLowerCase()))
       .sort((a, b) => b.quantity - a.quantity)
       .slice(0, 5);
-  }, [saleItems]);
+  }, [saleItems,dashboardQuery]);
 
   const branchName = (id: string) =>
     branches.find((branch) => branch.id === id)?.name || "Unknown";
 
-  const categoryData = [
-    { name: "Revenue", value: totalRevenue || 1 },
-    { name: "Inventory", value: inventoryValue || 1 },
-    { name: "Low Stock", value: lowStock.length || 1 },
-  ];
 
   if (loading) {
     return (
@@ -301,8 +290,9 @@ async function loadData() {
       <Sidebar />
 
       <main className="flex min-h-screen min-w-0 flex-1 flex-col">
+        <FinancialNotice error={dataError} historical={historical} stockIssues={products.filter(p=>p.stock<0).length}/>
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur md:px-6 xl:px-8">
-          <div className="flex w-full flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex w-full flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
             <div className="flex items-center justify-between gap-3">
               <button
                 className="flex h-10 w-10 items-center justify-center rounded-xl border bg-white lg:hidden"
@@ -316,11 +306,13 @@ async function loadData() {
                 <p className="text-xs text-slate-500">Owner Dashboard</p>
               </div>
 
-              <div className="relative hidden w-[360px] md:block xl:w-[430px]">
+              <div className="relative w-full md:w-[360px] 2xl:w-[430px]">
                 <Search className="absolute left-4 top-3.5 h-5 w-5 text-slate-400" />
                 <Input
                   className="h-12 rounded-2xl border-slate-200 bg-white pl-12 text-sm"
-                  placeholder="Search anything..."
+                  placeholder="Search sales or product names..."
+                  value={dashboardQuery}
+                  onChange={event=>setDashboardQuery(event.target.value)}
                 />
               </div>
             </div>
@@ -358,11 +350,14 @@ async function loadData() {
               <div className="flex gap-3 sm:col-span-2 xl:col-span-1">
                 <Button
                   variant="outline"
-                  size="icon"
-                  className="h-11 w-11 rounded-full bg-white"
+                  className="h-11 rounded-full bg-white px-4"
+                  onClick={refreshDashboardData}
+                  disabled={refreshing}
                 >
-                  <Bell className="h-5 w-5" />
+                  {refreshing ? "Refreshing..." : "Refresh"}
                 </Button>
+
+
 
                 <Button
                   variant="outline"
@@ -378,6 +373,7 @@ async function loadData() {
         </header>
 
         <section className="w-full flex-1 space-y-6 px-4 py-6 md:px-6 xl:px-8">
+          {!dataError && <>
           <div className="grid w-full grid-cols-1 gap-5 sm:grid-cols-2 2xl:grid-cols-4">
             <KpiCard
               icon={Wallet}
@@ -420,9 +416,9 @@ async function loadData() {
             <Card className="rounded-3xl border-slate-200 shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-base md:text-lg">
-                  Revenue Overview
+                  Revenue by Weekday
                 </CardTitle>
-                <Badge variant="outline">This Week</Badge>
+                <Badge variant="outline">All selected dates</Badge>
               </CardHeader>
 
               <CardContent className="h-[280px] md:h-[360px]">
@@ -463,30 +459,13 @@ async function loadData() {
             <Card className="rounded-3xl border-slate-200 shadow-sm">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-base md:text-lg">
-                  Business Breakdown
+                  Business Summary
                 </CardTitle>
-                <Badge variant="outline">Live</Badge>
+                <Badge variant="outline">Current snapshot</Badge>
               </CardHeader>
 
               <CardContent className="grid gap-4 md:grid-cols-2 2xl:grid-cols-2">
-                <div className="h-[220px] md:h-[280px]">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={categoryData}
-                        dataKey="value"
-                        innerRadius="58%"
-                        outerRadius="85%"
-                        paddingAngle={4}
-                      >
-                        <Cell fill="#6366f1" />
-                        <Cell fill="#10b981" />
-                        <Cell fill="#f59e0b" />
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
+                <p className="text-sm text-slate-500">Revenue and inventory value use USD base prices. Low-stock items are shown as a separate count.</p>
 
                 <div className="flex flex-col justify-center space-y-4">
                   <BreakdownDot
@@ -515,14 +494,14 @@ async function loadData() {
                 <CardTitle className="text-base md:text-lg">
                   Recent Sales
                 </CardTitle>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" onClick={()=>navigate('/reports')}>
                   View All
                 </Button>
               </CardHeader>
 
               <CardContent>
                 <div className="space-y-3">
-                  {sales.slice(0, 6).map((sale) => (
+                  {recentSales.slice(0, 6).map((sale) => (
                     <div
                       key={sale.id}
                       className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-200 p-3 text-sm md:grid-cols-[1fr_1fr_1fr_auto]"
@@ -548,8 +527,8 @@ async function loadData() {
                     </div>
                   ))}
 
-                  {sales.length === 0 && (
-                    <p className="text-sm text-slate-500">No sales yet.</p>
+                  {recentSales.length === 0 && (
+                    <p className="text-sm text-slate-500">{dashboardQuery ? "No matching sales." : "No sales yet."}</p>
                   )}
                 </div>
               </CardContent>
@@ -560,7 +539,7 @@ async function loadData() {
                 <CardTitle className="text-base md:text-lg">
                   Top Products
                 </CardTitle>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" onClick={()=>navigate('/analytics')}>
                   View All
                 </Button>
               </CardHeader>
@@ -587,7 +566,7 @@ async function loadData() {
                   ))}
 
                   {topProducts.length === 0 && (
-                    <p className="text-sm text-slate-500">No sale items yet.</p>
+                    <p className="text-sm text-slate-500">{dashboardQuery ? "No matching products." : "No sale items yet."}</p>
                   )}
                 </div>
               </CardContent>
@@ -598,7 +577,7 @@ async function loadData() {
                 <CardTitle className="text-base md:text-lg">
                   Low Stock Alert
                 </CardTitle>
-                <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" onClick={()=>navigate('/inventory')}>
                   View All
                 </Button>
               </CardHeader>
@@ -634,17 +613,11 @@ async function loadData() {
           </div>
 
           <Card className="rounded-3xl border-slate-200 shadow-sm">
-            <CardContent className="grid gap-6 p-5 sm:grid-cols-2 xl:grid-cols-4">
+            <CardContent className="grid gap-6 p-5 sm:grid-cols-2">
               <BottomStat
                 icon={Box}
                 label="Total Products"
                 value={String(products.length)}
-              />
-              <BottomStat icon={Users} label="Total Customers" value="Soon" />
-              <BottomStat
-                icon={UserRound}
-                label="Total Employees"
-                value="Soon"
               />
               <BottomStat
                 icon={Store}
@@ -653,6 +626,7 @@ async function loadData() {
               />
             </CardContent>
           </Card>
+                  </>}
         </section>
       </main>
     </div>
@@ -735,9 +709,8 @@ function KpiCard({
   value,
   sub,
   color,
-  change,
 }: {
-  icon: any;
+  icon: LucideIcon;
   title: string;
   value: string;
   sub: string;
@@ -796,7 +769,7 @@ function BottomStat({
   label,
   value,
 }: {
-  icon: any;
+  icon: LucideIcon;
   label: string;
   value: string;
 }) {

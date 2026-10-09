@@ -1,0 +1,3 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {readAllPages} from '../src/lib/pagination.ts';
+test('catalog keyset pagination reads beyond one thousand rows',async()=>{const all=Array.from({length:1101},(_,i)=>({id:String(i).padStart(5,'0')}));const rows=await readAllPages(async after=>({data:all.filter(r=>after===null||r.id>after).slice(0,500),error:null}));assert.equal(rows.length,1101);});
+test('pagination rejects errors and repeated cursors instead of partial catalogs',async()=>{await assert.rejects(readAllPages(async()=>({data:null,error:{message:'denied'}})),/denied/);await assert.rejects(readAllPages(async()=>({data:[{id:'a'}],error:null}),1),/cursor/);});

@@ -1,10 +1,16 @@
-import { useEffect, useState } from "react";
+import SmallWindowNavigation from "../components/SmallWindowNavigation";
+import {readCatalog} from '../lib/catalog';
+import { useEffect, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
+  BarChart3,
   Building2,
   CheckCircle2,
+  FileText,
   Gauge,
   LogOut,
   Mail,
+  Package,
   Receipt,
   Save,
   Settings,
@@ -41,7 +47,9 @@ type Branch = {
 
 const navItems = [
   { label: "Dashboard", icon: Gauge, href: "/dashboard" },
-  { label: "Reports", icon: Card, href: "/reports" },
+  { label: "Inventory", icon: Package, href: "/inventory" },
+  { label: "Analytics", icon: BarChart3, href: "/analytics" },
+  { label: "Reports", icon: FileText, href: "/reports" },
   { label: "Settings", icon: Settings, href: "/settings" },
 ];
 
@@ -51,24 +59,11 @@ export default function SettingsPage() {
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
-  const [currency, setCurrency] = useState("USD");
-  const [receiptFooter, setReceiptFooter] = useState("Thank you for shopping with us!");
-  const [taxRate, setTaxRate] = useState("0");
   const [saving, setSaving] = useState(false);
+  const saveBusy=useRef(false);
   const [saved, setSaved] = useState(false);
+  const [saveError,setSaveError] = useState("");
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
-  useEffect(() => {
-    if (selectedBusiness) {
-      const business = businesses.find((item) => item.id === selectedBusiness);
-      setBusinessName(business?.name || "");
-      loadBranches(selectedBusiness);
-    }
-  }, [selectedBusiness, businesses]);
 
   async function loadSettings() {
     const { data: userData } = await supabase.auth.getUser();
@@ -80,10 +75,8 @@ export default function SettingsPage() {
 
     setOwnerEmail(userData.user.email || "");
 
-    const { data } = await supabase
-      .from("businesses")
-      .select("*")
-      .eq("owner_id", userData.user.id);
+    const {data,error:catalogError}=await readCatalog<Business>('businesses',userData.user.id);
+    if(catalogError){setSaveError(catalogError.message);setLoading(false);return;}
 
     setBusinesses(data || []);
 
@@ -96,39 +89,38 @@ export default function SettingsPage() {
   }
 
   async function loadBranches(businessId: string) {
-    const { data } = await supabase
-      .from("branches")
-      .select("*")
-      .eq("business_id", businessId);
+    const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setSaveError(catalogError.message);setBranches([]);return;}
 
     setBranches(data || []);
   }
 
+  useEffect(() => {
+    const timer=window.setTimeout(() => { void loadSettings(); },0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    const timer=window.setTimeout(() => {
+      if(selectedBusiness){setBusinessName(businesses.find(b=>b.id===selectedBusiness)?.name??'');void loadBranches(selectedBusiness);}
+    },0);
+    return () => window.clearTimeout(timer);
+  },[selectedBusiness,businesses]);
+
   async function saveBusinessProfile() {
-    if (!selectedBusiness) return;
-
-    setSaving(true);
-    setSaved(false);
-
-    await supabase
-      .from("businesses")
-      .update({
-        name: businessName,
-      })
-      .eq("id", selectedBusiness);
-
-    setBusinesses((prev) =>
-      prev.map((business) =>
-        business.id === selectedBusiness
-          ? { ...business, name: businessName }
-          : business
-      )
-    );
-
-    setSaving(false);
-    setSaved(true);
-
-    setTimeout(() => setSaved(false), 2500);
+    if(saveBusy.current)return;
+    const name=businessName.trim();
+    if(!selectedBusiness||!name||name.length>255){setSaveError('Enter a business name between 1 and 255 characters.');return;}
+    saveBusy.current=true;setSaving(true);setSaved(false);setSaveError('');
+    try {
+      const {data,error:authError}=await supabase.auth.getUser();
+      if(authError||!data.user||!businesses.some(b=>b.id===selectedBusiness&&b.owner_id===data.user!.id))throw new Error('Reconnect the owner of this business before saving.');
+      const result=await supabase.from('businesses').update({name}).eq('id',selectedBusiness).eq('owner_id',data.user.id).select('id,name,owner_id').single();
+      if(result.error)throw result.error;
+      if(!result.data||result.data.id!==selectedBusiness||result.data.owner_id!==data.user.id)throw new Error('The business update was not confirmed.');
+      setBusinesses(previous=>previous.map(b=>b.id===selectedBusiness?{...b,name:result.data.name}:b));
+      setBusinessName(result.data.name);setSaved(true);
+    }catch(error){setSaveError(error instanceof Error?error.message:'Business update failed. Please try again.');}
+    finally{saveBusy.current=false;setSaving(false);}
   }
 
   async function logout() {
@@ -148,13 +140,15 @@ export default function SettingsPage() {
     <div className="flex min-h-screen w-full overflow-x-hidden bg-[#f5f7fb] text-slate-950">
       <Sidebar />
 
+      {saveError&&<p role="alert">{saveError}</p>}
       <main className="flex min-h-screen min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur md:px-6 xl:px-8">
+          <SmallWindowNavigation />
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <h1 className="text-2xl font-bold text-slate-950">Settings</h1>
               <p className="text-sm text-slate-500">
-                Manage your business, branches, receipt, and account settings.
+                Manage your business name and view authorized branches and account settings.
               </p>
             </div>
 
@@ -231,33 +225,8 @@ export default function SettingsPage() {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-600">
-                      Default Currency
-                    </label>
-                    <Select value={currency} onValueChange={setCurrency}>
-                      <SelectTrigger className="h-12 rounded-2xl bg-white">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="USD">USD - Dollar</SelectItem>
-                        <SelectItem value="LBP">LBP - Lebanese Pound</SelectItem>
-                        <SelectItem value="EUR">EUR - Euro</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-600">
-                      Tax Rate %
-                    </label>
-                    <Input
-                      className="h-12 rounded-2xl bg-white"
-                      value={taxRate}
-                      onChange={(e) => setTaxRate(e.target.value)}
-                      placeholder="0"
-                    />
-                  </div>
+                  <p className="text-sm text-slate-600">Verified reports use USD base prices and show the original USD or LBP settlement currency. Exchange rates are set in the POS.</p>
+                  <p className="text-sm text-slate-600">The current POS applies zero tax. Tax changes are not supported by this release.</p>
                 </div>
 
                 <Button
@@ -330,9 +299,7 @@ export default function SettingsPage() {
                   </p>
                 )}
 
-                <Button variant="outline" className="h-12 w-full rounded-2xl">
-                  Add Branch Soon
-                </Button>
+                <p className="text-sm text-slate-500">Existing authorized branches are listed here. Branch creation is not available from this dashboard.</p>
               </CardContent>
             </Card>
 
@@ -345,41 +312,7 @@ export default function SettingsPage() {
               </CardHeader>
 
               <CardContent className="space-y-5">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-slate-600">
-                    Receipt Footer Message
-                  </label>
-                  <Input
-                    className="h-12 rounded-2xl bg-white"
-                    value={receiptFooter}
-                    onChange={(e) => setReceiptFooter(e.target.value)}
-                  />
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-3">
-                  <PreferenceBox
-                    title="Receipt Printing"
-                    description="Enable receipt printing from POS."
-                    value="Enabled"
-                  />
-
-                  <PreferenceBox
-                    title="Barcode Scanner"
-                    description="Use barcode search in checkout."
-                    value="Enabled"
-                  />
-
-                  <PreferenceBox
-                    title="Stock Alerts"
-                    description="Show warnings for low stock."
-                    value="Enabled"
-                  />
-                </div>
-
-                <Button className="h-12 rounded-2xl px-6">
-                  <Save className="mr-2 h-4 w-4" />
-                  Save POS Preferences
-                </Button>
+                <p className="text-sm text-slate-600">Barcode checkout and stock alerts are configured in the POS. Receipt footer editing and printer integration are not available in this release.</p>
               </CardContent>
             </Card>
           </div>
@@ -460,7 +393,7 @@ function SettingRow({
   title,
   value,
 }: {
-  icon: any;
+  icon: LucideIcon;
   title: string;
   value: string;
 }) {
@@ -478,25 +411,3 @@ function SettingRow({
   );
 }
 
-function PreferenceBox({
-  title,
-  description,
-  value,
-}: {
-  title: string;
-  description: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-2xl border bg-white p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <p className="font-medium">{title}</p>
-        <Badge className="bg-emerald-50 text-emerald-600 hover:bg-emerald-50">
-          {value}
-        </Badge>
-      </div>
-
-      <p className="text-sm text-slate-500">{description}</p>
-    </div>
-  );
-}

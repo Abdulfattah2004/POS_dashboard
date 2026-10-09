@@ -1,4 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import SmallWindowNavigation from "../components/SmallWindowNavigation";
+import {readCatalog} from '../lib/catalog';
+import { matchesPeriod } from '../lib/businessDate';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { LucideIcon } from "lucide-react";
 import {
   AlertCircle,
   BarChart3,
@@ -30,6 +34,10 @@ import {
 import { Badge } from "../components/ui/badge";
 import { Input } from "../components/ui/input";
 import { NavLink } from "react-router-dom";
+import { useInventoryRealtime } from "../hooks/useInventoryRealtime";
+import { fetchFinancialSnapshot } from "../lib/financialData";
+import { FinancialNotice } from "../components/FinancialNotice";
+import { SnapshotRequestGuard, csvCell } from "../lib/financial";
 
 type Business = {
   id: string;
@@ -44,6 +52,9 @@ type Branch = {
 };
 
 type Sale = {
+  kind: "sale" | "refund";
+  settlement_currency: string;
+  settlement_amount: number;
   id: string;
   business_id: string;
   branch_id: string;
@@ -74,6 +85,8 @@ type SaleItem = {
 
 const navItems = [
   { label: "Dashboard", icon: Gauge, href: "/dashboard" },
+  { label: "Inventory", icon: Package, href: "/inventory" },
+  { label: "Analytics", icon: BarChart3, href: "/analytics" },
   { label: "Reports", icon: FileText, href: "/reports", active: true },
   { label: "Settings", icon: Settings, href: "/settings" },
 ];
@@ -83,23 +96,22 @@ export default function ReportsPage() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
-  const [sales, setSales] = useState<Sale[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [saleItems, setSaleItems] = useState<SaleItem[]>([]);
+  const [loadedSales, setSales] = useState<Sale[]>([]);
+  const [loadedProducts, setProducts] = useState<Product[]>([]);
+  const [loadedItems, setSaleItems] = useState<SaleItem[]>([]);
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState("all");
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadBusinesses();
-  }, []);
-
-  useEffect(() => {
-    if (selectedBusiness) {
-      loadBranches(selectedBusiness);
-      loadReportData();
-    }
-  }, [selectedBusiness, selectedBranch]);
+  const [dataError,setDataError] = useState("");
+  const [loadedHistory,setHistorical] = useState<Record<string,unknown[]>|null>(null);
+  const [loadedScope,setLoadedScope] = useState('');
+  const scopeMatches=loadedScope===selectedBusiness+'/'+selectedBranch;
+  const sales=useMemo(()=>scopeMatches?loadedSales:[],[scopeMatches,loadedSales]);
+  const products=scopeMatches?loadedProducts:[];
+  const saleItems=useMemo(()=>scopeMatches?loadedItems:[],[scopeMatches,loadedItems]);
+  const historical=scopeMatches?loadedHistory:null;
+  const requestGuard=useRef(new SnapshotRequestGuard());
+  useLayoutEffect(() => { requestGuard.current.activate(selectedBusiness+"/"+selectedBranch); },[selectedBusiness,selectedBranch]);
 
   async function loadBusinesses() {
     const { data: userData } = await supabase.auth.getUser();
@@ -109,10 +121,8 @@ export default function ReportsPage() {
       return;
     }
 
-    const { data } = await supabase
-      .from("businesses")
-      .select("*")
-      .eq("owner_id", userData.user.id);
+    const {data,error:catalogError}=await readCatalog<Business>('businesses',userData.user.id);
+    if(catalogError){setDataError(catalogError.message);setLoading(false);return;}
 
     setBusinesses(data || []);
 
@@ -124,44 +134,41 @@ export default function ReportsPage() {
   }
 
   async function loadBranches(businessId: string) {
-    const { data } = await supabase
-      .from("branches")
-      .select("*")
-      .eq("business_id", businessId);
+    const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setDataError(catalogError.message);setBranches([]);return;}
 
     setBranches(data || []);
   }
 
-  async function loadReportData() {
-    let salesQuery = supabase
-      .from("sales")
-      .select("*")
-      .eq("business_id", selectedBusiness)
-      .order("date", { ascending: false });
+  const loadReportData = useCallback(async () => {
+ const scope=selectedBusiness+'/'+selectedBranch;const ticket=requestGuard.current.begin(scope);
+ try {
+ const data=await fetchFinancialSnapshot(selectedBusiness,selectedBranch);
+ if(!requestGuard.current.isCurrent(ticket))return;
+ setSales(data.sales);setSaleItems(data.saleItems);setProducts(data.products as unknown as Product[]);setHistorical(data.historical);setLoadedScope(scope);setDataError('');
+ } catch(error) {
+ if(requestGuard.current.isCurrent(ticket)){setSales([]);setSaleItems([]);setProducts([]);setHistorical(null);setDataError(error instanceof Error?error.message:'Financial data could not be loaded');}
+ }
+},[selectedBusiness,selectedBranch]);
 
-    let productsQuery = supabase
-      .from("products")
-      .select("*")
-      .eq("business_id", selectedBusiness);
+    useInventoryRealtime(
+    selectedBusiness,
+    branches.map((branch) => branch.id),
+    loadReportData
+  );
 
-    let saleItemsQuery = supabase
-      .from("sale_items")
-      .select("*")
-      .eq("business_id", selectedBusiness);
+  useEffect(() => {
+    const timer=window.setTimeout(() => { void loadBusinesses(); },0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
-    if (selectedBranch !== "all") {
-      salesQuery = salesQuery.eq("branch_id", selectedBranch);
-      productsQuery = productsQuery.eq("branch_id", selectedBranch);
-      saleItemsQuery = saleItemsQuery.eq("branch_id", selectedBranch);
+  useEffect(() => {
+    if (selectedBusiness) {
+      const timer=window.setTimeout(() => { void loadBranches(selectedBusiness); void loadReportData(); },0);
+      return () => window.clearTimeout(timer);
     }
+  }, [selectedBusiness, selectedBranch, loadReportData]);
 
-    const [{ data: salesData }, { data: productsData }, { data: itemsData }] =
-      await Promise.all([salesQuery, productsQuery, saleItemsQuery]);
-
-    setSales(salesData || []);
-    setProducts(productsData || []);
-    setSaleItems(itemsData || []);
-  }
 
   async function logout() {
     await supabase.auth.signOut();
@@ -169,8 +176,6 @@ export default function ReportsPage() {
   }
 
   const filteredSales = useMemo(() => {
-    const now = new Date();
-
     return sales.filter((sale) => {
       const saleDate = new Date(sale.date);
 
@@ -181,24 +186,7 @@ export default function ReportsPage() {
 
       if (!matchesSearch) return false;
 
-      if (period === "today") {
-        return saleDate.toDateString() === now.toDateString();
-      }
-
-      if (period === "week") {
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(now.getDate() - 7);
-        return saleDate >= sevenDaysAgo;
-      }
-
-      if (period === "month") {
-        return (
-          saleDate.getMonth() === now.getMonth() &&
-          saleDate.getFullYear() === now.getFullYear()
-        );
-      }
-
-      return true;
+      return matchesPeriod(saleDate,period);
     });
   }, [sales, search, period]);
 
@@ -214,7 +202,7 @@ export default function ReportsPage() {
 
   const discounts = Math.max(expectedRevenue - totalRevenue, 0);
 
-  const transactions = filteredSales.length;
+  const transactions = filteredSales.filter(s=>s.kind==="sale").length;
 
   const averageOrder = transactions > 0 ? totalRevenue / transactions : 0;
 
@@ -235,7 +223,7 @@ export default function ReportsPage() {
       { name: string; quantity: number; total: number }
     >();
 
-    saleItems.forEach((item) => {
+    saleItems.filter(item => filteredSales.some(s => s.id === (item as SaleItem & {sale_id:string}).sale_id)).forEach((item) => {
       const current = map.get(item.product_name) || {
         name: item.product_name,
         quantity: 0,
@@ -251,7 +239,7 @@ export default function ReportsPage() {
     return Array.from(map.values())
       .sort((a, b) => b.total - a.total)
       .slice(0, 6);
-  }, [saleItems]);
+  }, [saleItems, filteredSales]);
 
   const branchName = (id: string) =>
     branches.find((branch) => branch.id === id)?.name || "Unknown";
@@ -259,17 +247,20 @@ export default function ReportsPage() {
   function exportReport() {
     const rows = filteredSales.map((sale) => ({
       Receipt: sale.id,
+      Kind: sale.kind,
+      SettlementCurrency: sale.settlement_currency,
+      SettlementAmount: sale.settlement_amount,
       Date: sale.date,
       Branch: branchName(sale.branch_id),
       Cashier: sale.cashier_name,
       Currency: sale.currency,
-      Subtotal: Number(sale.subtotal || 0).toFixed(2),
-      Total: Number(sale.total || 0).toFixed(2),
+      Subtotal: Number(sale.subtotal || 0),
+      Total: Number(sale.total || 0),
     }));
 
     const csv = [
-      Object.keys(rows[0] || {}).join(","),
-      ...rows.map((row) => Object.values(row).join(",")),
+      Object.keys(rows[0] || {}).map(csvCell).join(","),
+      ...rows.map((row) => Object.values(row).map(csvCell).join(",")),
     ].join("\n");
 
     const blob = new Blob([csv], { type: "text/csv" });
@@ -296,7 +287,9 @@ export default function ReportsPage() {
       <Sidebar />
 
       <main className="flex min-h-screen min-w-0 flex-1 flex-col">
+        <FinancialNotice error={dataError} historical={historical} stockIssues={products.filter(p=>p.stock<0).length}/>
         <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 px-4 py-4 backdrop-blur md:px-6 xl:px-8">
+          <SmallWindowNavigation />
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <h1 className="text-2xl font-bold text-slate-950">Reports</h1>
@@ -348,6 +341,7 @@ export default function ReportsPage() {
         </header>
 
         <section className="w-full flex-1 space-y-6 px-4 py-6 md:px-6 xl:px-8">
+          {!dataError && <>
           <div className="grid gap-5 sm:grid-cols-2 2xl:grid-cols-5">
             <ReportCard
               icon={Wallet}
@@ -544,6 +538,7 @@ export default function ReportsPage() {
               </Card>
             </div>
           </div>
+                  </>}
         </section>
       </main>
     </div>
@@ -607,7 +602,7 @@ function ReportCard({
   description,
   color,
 }: {
-  icon: any;
+  icon: LucideIcon;
   title: string;
   value: string;
   description: string;

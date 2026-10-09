@@ -1,0 +1,6 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {businessDate,businessHour,matchesPeriod,timeBuckets} from '../src/lib/businessDate.ts';
+test('Dashboard agrees with POS Beirut day across UTC midnight',()=>{assert.equal(businessDate('2026-09-30T22:30:00Z'),'2026-10-01');assert.ok(matchesPeriod('2026-09-30T22:30:00Z','today',new Date('2026-10-01T10:00:00Z')));assert.equal(businessHour(new Date('2026-09-30T22:30:00Z')),1);});
+test('seven-day period includes every chart bucket and excludes future dates',()=>{const now=new Date('2026-10-03T10:00:00Z');const buckets=timeBuckets('week',[],now);assert.equal(buckets.length,7);assert.equal(buckets[0].key,'2026-09-27');assert.ok(matchesPeriod('2026-09-27T00:00:00Z','week',now));assert.ok(!matchesPeriod('2026-09-26T00:00:00Z','week',now));assert.ok(!matchesPeriod('2026-10-04T00:00:00Z','week',now));});
+test('month and historical chart buckets share fiscal dates and chronological order',()=>{const now=new Date('2026-10-03T10:00:00Z');assert.ok(matchesPeriod('2026-09-30T22:30:00Z','month',now));assert.equal(timeBuckets('month',[],now).length,31);assert.deepEqual(timeBuckets('all',['2026-10-02T12:00:00Z','2026-09-30T22:30:00Z']).map(b=>b.key),['2026-10-01','2026-10-02']);});
