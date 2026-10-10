@@ -9,7 +9,6 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "test:branches:browser": "node --experimental-strip-types scripts/test-dashboard-branches.mjs",
     "typecheck": "tsc -b",
     "test:build-credentials": "node scripts/check-build-credentials.mjs"
   },
@@ -53,7 +52,6 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.3",
     "globals": "^17.6.0",
-    "playwright-core": "1.63.0",
     "tailwindcss": "^4.3.1",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.61.0",

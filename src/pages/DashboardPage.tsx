@@ -1,5 +1,3 @@
-import { useDashboardBranches } from '../hooks/useDashboardBranches';
-import { isDashboardSelection } from '../lib/branchPolicy';
 import {readCatalog} from '../lib/catalog';
 import { businessDate, businessWeekday } from '../lib/businessDate';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -108,6 +106,7 @@ export default function DashboardPage() {
   const navigate=useNavigate();
   const [dashboardQuery,setDashboardQuery]=useState("");
   const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [loadedSales, setSales] = useState<Sale[]>([]);
@@ -115,10 +114,9 @@ export default function DashboardPage() {
   const [loadedItems, setSaleItems] = useState<SaleItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataError,setDataError] = useState("");
-  const branches = useDashboardBranches<Branch>(selectedBusiness, setDataError, setSelectedBranch, selectedBranch);
   const [loadedHistory,setHistorical] = useState<Record<string,unknown[]>|null>(null);
   const [loadedScope,setLoadedScope] = useState('');
-  const scopeMatches=loadedScope===selectedBusiness+'/'+selectedBranch && isDashboardSelection(branches,selectedBranch);
+  const scopeMatches=loadedScope===selectedBusiness+'/'+selectedBranch;
   const sales=useMemo(()=>scopeMatches?loadedSales:[],[scopeMatches,loadedSales]);
   const products=scopeMatches?loadedProducts:[];
   const saleItems=useMemo(()=>scopeMatches?loadedItems:[],[scopeMatches,loadedItems]);
@@ -147,6 +145,13 @@ export default function DashboardPage() {
 
     setLoading(false);
   }
+
+async function loadBranches(businessId: string) {
+  const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setDataError(catalogError.message);setBranches([]);return;}
+
+  setBranches(data || []);
+}
 
 const loadData = useCallback(async () => {
  const scope=selectedBusiness+'/'+selectedBranch;const ticket=requestGuard.current.begin(scope);
@@ -178,7 +183,7 @@ async function refreshDashboardData() {
 
   useEffect(() => {
     if (selectedBusiness) {
-      const timer=window.setTimeout(() => { void loadData(); },0);
+      const timer=window.setTimeout(() => { void loadBranches(selectedBusiness); void loadData(); },0);
       return () => window.clearTimeout(timer);
     }
   }, [selectedBusiness, selectedBranch, loadData]);

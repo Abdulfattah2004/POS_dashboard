@@ -1,5 +1,3 @@
-import { useDashboardBranches } from '../hooks/useDashboardBranches';
-import { isDashboardSelection } from '../lib/branchPolicy';
 import SmallWindowNavigation from "../components/SmallWindowNavigation";
 import {readCatalog} from '../lib/catalog';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -71,6 +69,7 @@ const navItems = [
 
 export default function InventoryPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [loadedProducts, setProducts] = useState<Product[]>([]);
@@ -78,10 +77,9 @@ export default function InventoryPage() {
   const [category, setCategory] = useState("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const branches = useDashboardBranches<Branch>(selectedBusiness, setError, setSelectedBranch, selectedBranch);
   const [refreshing, setRefreshing] = useState(false);
   const [loadedScope,setLoadedScope]=useState('');
-  const products=useMemo(()=>loadedScope===selectedBusiness+'/'+selectedBranch && isDashboardSelection(branches,selectedBranch)?loadedProducts:[],[loadedScope,selectedBusiness,selectedBranch,loadedProducts,branches]);
+  const products=useMemo(()=>loadedScope===selectedBusiness+'/'+selectedBranch?loadedProducts:[],[loadedScope,selectedBusiness,selectedBranch,loadedProducts]);
   const requestGuard=useRef(new SnapshotRequestGuard());
   useLayoutEffect(()=>{requestGuard.current.activate(selectedBusiness+'/'+selectedBranch);},[selectedBusiness,selectedBranch]);
 
@@ -106,6 +104,12 @@ export default function InventoryPage() {
     setLoading(false);
   }
 
+  async function loadBranches(businessId: string) {
+    const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setError(catalogError.message);setBranches([]);return;}
+
+    setBranches(data || []);
+  }
 
   const loadInventory=useCallback(async () => {
     const scope=selectedBusiness+'/'+selectedBranch;const ticket=requestGuard.current.begin(scope);
@@ -116,8 +120,16 @@ export default function InventoryPage() {
       return;
     }
 
+    const {data:branchData,error:branchError}=await readCatalog<Branch>('branches',selectedBusiness);
+
+    if(!requestGuard.current.isCurrent(ticket))return;
+    if(branchError){setError(branchError.message);return;}
+    const visibleBranches = branchData || [];
+    const visibleBranchIds = visibleBranches.map((branch) => branch.id);
+
     const { data, error: queryError } = await fetchInventoryProducts<Product>(
       selectedBusiness,
+      visibleBranchIds,
       selectedBranch
     );
 
@@ -128,7 +140,6 @@ export default function InventoryPage() {
         branch_id: selectedBranch,
         queryError,
       });
-      setProducts([]);setLoadedScope('');
       setError("Failed to load inventory. Please try again.");
       return;
     }
@@ -154,7 +165,7 @@ export default function InventoryPage() {
 
   useInventoryRealtime(selectedBusiness,branches.map(b=>b.id),loadInventory);
   useEffect(()=>{const timer=window.setTimeout(()=>{void loadBusinesses();},0);return()=>window.clearTimeout(timer);},[]);
-  useEffect(()=>{const timer=window.setTimeout(()=>{if(selectedBusiness){void loadInventory();}},0);return()=>window.clearTimeout(timer);},[selectedBusiness,selectedBranch,loadInventory]);
+  useEffect(()=>{const timer=window.setTimeout(()=>{if(selectedBusiness){void loadBranches(selectedBusiness);void loadInventory();}},0);return()=>window.clearTimeout(timer);},[selectedBusiness,selectedBranch,loadInventory]);
 
   async function refreshInventory() {
     setRefreshing(true);
