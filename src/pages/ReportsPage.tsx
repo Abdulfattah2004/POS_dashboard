@@ -1,5 +1,3 @@
-import { useDashboardBranches } from '../hooks/useDashboardBranches';
-import { isDashboardSelection } from '../lib/branchPolicy';
 import SmallWindowNavigation from "../components/SmallWindowNavigation";
 import {readCatalog} from '../lib/catalog';
 import { matchesPeriod } from '../lib/businessDate';
@@ -95,6 +93,7 @@ const navItems = [
 
 export default function ReportsPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [loadedSales, setSales] = useState<Sale[]>([]);
@@ -104,10 +103,9 @@ export default function ReportsPage() {
   const [period, setPeriod] = useState("all");
   const [loading, setLoading] = useState(true);
   const [dataError,setDataError] = useState("");
-  const branches = useDashboardBranches<Branch>(selectedBusiness, setDataError, setSelectedBranch, selectedBranch);
   const [loadedHistory,setHistorical] = useState<Record<string,unknown[]>|null>(null);
   const [loadedScope,setLoadedScope] = useState('');
-  const scopeMatches=loadedScope===selectedBusiness+'/'+selectedBranch && isDashboardSelection(branches,selectedBranch);
+  const scopeMatches=loadedScope===selectedBusiness+'/'+selectedBranch;
   const sales=useMemo(()=>scopeMatches?loadedSales:[],[scopeMatches,loadedSales]);
   const products=scopeMatches?loadedProducts:[];
   const saleItems=useMemo(()=>scopeMatches?loadedItems:[],[scopeMatches,loadedItems]);
@@ -135,6 +133,12 @@ export default function ReportsPage() {
     setLoading(false);
   }
 
+  async function loadBranches(businessId: string) {
+    const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setDataError(catalogError.message);setBranches([]);return;}
+
+    setBranches(data || []);
+  }
 
   const loadReportData = useCallback(async () => {
  const scope=selectedBusiness+'/'+selectedBranch;const ticket=requestGuard.current.begin(scope);
@@ -160,7 +164,7 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (selectedBusiness) {
-      const timer=window.setTimeout(() => { void loadReportData(); },0);
+      const timer=window.setTimeout(() => { void loadBranches(selectedBusiness); void loadReportData(); },0);
       return () => window.clearTimeout(timer);
     }
   }, [selectedBusiness, selectedBranch, loadReportData]);

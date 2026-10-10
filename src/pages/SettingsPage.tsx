@@ -1,4 +1,3 @@
-import { useDashboardBranches } from '../hooks/useDashboardBranches';
 import SmallWindowNavigation from "../components/SmallWindowNavigation";
 import {readCatalog} from '../lib/catalog';
 import { useEffect, useRef, useState } from "react";
@@ -56,6 +55,7 @@ const navItems = [
 
 export default function SettingsPage() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [selectedBusiness, setSelectedBusiness] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [ownerEmail, setOwnerEmail] = useState("");
@@ -64,7 +64,6 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false);
   const [saveError,setSaveError] = useState("");
   const [loading, setLoading] = useState(true);
-  const branches = useDashboardBranches<Branch>(selectedBusiness, setSaveError);
 
   async function loadSettings() {
     const { data: userData } = await supabase.auth.getUser();
@@ -89,6 +88,12 @@ export default function SettingsPage() {
     setLoading(false);
   }
 
+  async function loadBranches(businessId: string) {
+    const {data,error:catalogError}=await readCatalog<Branch>('branches',businessId);
+    if(catalogError){setSaveError(catalogError.message);setBranches([]);return;}
+
+    setBranches(data || []);
+  }
 
   useEffect(() => {
     const timer=window.setTimeout(() => { void loadSettings(); },0);
@@ -96,7 +101,7 @@ export default function SettingsPage() {
   }, []);
   useEffect(() => {
     const timer=window.setTimeout(() => {
-      if(selectedBusiness){setBusinessName(businesses.find(b=>b.id===selectedBusiness)?.name??'');}
+      if(selectedBusiness){setBusinessName(businesses.find(b=>b.id===selectedBusiness)?.name??'');void loadBranches(selectedBusiness);}
     },0);
     return () => window.clearTimeout(timer);
   },[selectedBusiness,businesses]);
